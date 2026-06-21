@@ -1,3 +1,4 @@
+
 import csv
 import os
 import requests
@@ -32,40 +33,60 @@ MASTER_PATH = os.path.join(DATA_DIR, 'listings.csv')
 PROPERTY_API_URL = 'https://api-trestle.corelogic.com/trestle/odata/Property'
 AUTH_ENDPOINT = 'https://idxexchange.com/internal-api/trestle_token.php?key=IDXEXCHANGE2026_CHANGE_THIS'
  
+# ============================================================
+# Which months to pull.
+#
+# - To pull ONLY the most recently completed calendar month (normal weekly
+#   run), leave MONTHS_TO_PULL = None.
+# - To backfill specific months (e.g. per instructor's request for
+#   202602, 202603, 202604, 202605), list them here as (year, month) tuples.
+# ============================================================
+MONTHS_TO_PULL = [
+    (2026, 2),
+    (2026, 3),
+    (2026, 4),
+    (2026, 5),
+]
+# MONTHS_TO_PULL = None  # uncomment this line (and comment the block above)
+#                          to go back to normal "most recent month" behavior
+ 
+ 
+def get_default_month():
+    """Most recently completed calendar month relative to today."""
+    today = date.today()
+    if today.month == 1:
+        return today.year - 1, 12
+    return today.year, today.month - 1
+ 
+ 
+def get_months_to_pull():
+    if MONTHS_TO_PULL is not None:
+        return MONTHS_TO_PULL
+    return [get_default_month()]
+ 
  
 # ============================================================
-# Determine which month to pull: the most recently completed
-# calendar month (e.g. if today is June 2026, this pulls May 2026)
-# ============================================================
-today = date.today()
-if today.month == 1:
-    pull_year, pull_month = today.year - 1, 12
-else:
-    pull_year, pull_month = today.year, today.month - 1
- 
-month_start = datetime(pull_year, pull_month, 1)
-if pull_month == 12:
-    month_end = datetime(pull_year + 1, 1, 1)
-else:
-    month_end = datetime(pull_year, pull_month + 1, 1)
- 
-yyyymm = f"{pull_year}{pull_month:02d}"
-monthly_csv_file = os.path.join(DATA_DIR, f"CRMLSListing{yyyymm}.csv")
- 
- 
-# ============================================================
-# STEP 1: Pull this month's data from the Trestle API
+# STEP 1: Pull one month's data from the Trestle API
 # (same auth + pagination logic as the original script)
 # ============================================================
  
-def fetch_month_from_api():
+def fetch_month_from_api(pull_year, pull_month):
+    month_start = datetime(pull_year, pull_month, 1)
+    if pull_month == 12:
+        month_end = datetime(pull_year + 1, 1, 1)
+    else:
+        month_end = datetime(pull_year, pull_month + 1, 1)
+ 
+    yyyymm = f"{pull_year}{pull_month:02d}"
+    monthly_csv_file = os.path.join(DATA_DIR, f"CRMLSListing{yyyymm}.csv")
+ 
     response = requests.get(AUTH_ENDPOINT, timeout=30)
     response.raise_for_status()
     token = response.json().get('access_token')
  
     if not token:
         print("Error retrieving token: access_token not found")
-        return None
+        return None, yyyymm
  
     headers = {'Authorization': f'Bearer {token}'}
     params = {
@@ -104,21 +125,20 @@ def fetch_month_from_api():
                 break
  
     print(f"Total {total_records} records exported to {monthly_csv_file}")
-    return monthly_csv_file
+    return monthly_csv_file, yyyymm
  
  
 # ============================================================
-# STEP 2: Fold this month's data into the master listings.csv,
+# STEP 2: Fold one month's data into the master listings.csv,
 # filtered to PropertyType == 'Residential', without duplicating
 # a month that's already been added in a previous run
 # ============================================================
  
-def update_master_csv(month_file):
+def update_master_csv(month_file, yyyymm):
     if month_file is None or not os.path.exists(month_file):
-        print("No monthly file to merge into listings.csv — skipping update.")
+        print(f"No monthly file for {yyyymm} to merge into listings.csv — skipping.")
         return
  
-    # Read existing master and figure out which months are already in it
     if os.path.exists(MASTER_PATH):
         with open(MASTER_PATH, newline='') as f:
             reader = csv.DictReader(f)
@@ -139,7 +159,6 @@ def update_master_csv(month_file):
               f"to avoid duplicates.")
         return
  
-    # Read this month's raw pull and filter to Residential
     with open(month_file, newline='') as f:
         reader = csv.DictReader(f)
         month_rows = list(reader)
@@ -168,5 +187,8 @@ def update_master_csv(month_file):
  
  
 if __name__ == "__main__":
-    month_file = fetch_month_from_api()
-    update_master_csv(month_file)
+    for (yr, mo) in get_months_to_pull():
+        print(f"\n=== Processing {yr}-{mo:02d} ===")
+        month_file, yyyymm = fetch_month_from_api(yr, mo)
+        update_master_csv(month_file, yyyymm)
+ 
